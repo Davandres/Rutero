@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rutero</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1b5e20">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html,body{height:100%;margin:0;font-family:system-ui,sans-serif}
+  body{display:flex;flex-direction:column}
+  header{background:#1b5e20;color:#fff;padding:8px;display:flex;gap:6px;align-items:center}
+  header select,header button{flex:1;padding:8px;font-size:15px;border-radius:6px;border:0}
+  #map{flex:1;min-height:40%}
+  #list{max-height:35%;overflow:auto;background:#fff}
+  .item{padding:10px 12px;border-bottom:1px solid #ddd;cursor:pointer}
+  .item small{color:#666;display:block}
+  .btns a{display:inline-block;margin:6px 6px 0 0;padding:6px 10px;background:#1b5e20;color:#fff;border-radius:6px;text-decoration:none;font-size:14px}
+  #estado{font-size:12px;padding:4px 8px;background:#fff3cd;display:none}
+</style>
+</head>
+<body>
+<header>
+  <select id="fVend"><option value="">Todos los vendedores</option></select>
+  <select id="fDia"><option value="">Todos los días</option></select>
+  <button id="btnVista">Lista</button>
+</header>
+<div id="estado"></div>
+<div id="map"></div>
+<div id="list"></div>
+
+<script>
+// ====== CONFIGURA AQUÍ ======
+const CSV_URL = "clientes_quito_rutas.csv";
+// ============================
+
+const BOUNDS = [[-81.2, -5.1], [-75.1, 1.5]]; // Ecuador continental
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: {
+    version: 8,
+    sources: { osm: { type: "raster", tileSize: 256, maxzoom: 19,
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      attribution: "© OpenStreetMap contributors" } },
+    layers: [{ id: "osm", type: "raster", source: "osm" }]
+  },
+  bounds: BOUNDS, maxBounds: [[-82, -5.8], [-74.5, 2]], minZoom: 5
+});
+map.addControl(new maplibregl.NavigationControl());
+map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: true }));
+
+let puntos = [], marcadores = [];
+
+function esc(s){ return String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function parseCSV(t){
+  const rows = []; let r = [], c = "", q = false;
+  for (let i = 0; i < t.length; i++){
+    const ch = t[i];
+    if (q){ if (ch === '"'){ if (t[i+1] === '"'){ c += '"'; i++; } else q = false; } else c += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === ","){ r.push(c); c = ""; }
+    else if (ch === "\n"){ r.push(c); rows.push(r); r = []; c = ""; }
+    else if (ch !== "\r") c += ch;
+  }
+  if (c || r.length){ r.push(c); rows.push(r); }
+  const head = rows.shift().map(h => h.trim().toLowerCase());
+  return rows.filter(x => x.length > 1).map(x => Object.fromEntries(head.map((h, i) => [h, (x[i]||"").trim()])));
+}
+
+function aviso(msg){ const e = document.getElementById("estado"); e.textContent = msg; e.style.display = msg ? "block" : "none"; }
+
+async function cargar(){
+  try {
+    const res = await fetch(CSV_URL + (CSV_URL.includes("?") ? "&" : "?") + "t=" + Date.now());
+    if (!res.ok) throw new Error();
+    const txt = await res.text();
+    localStorage.setItem("rutero_csv", txt);
+    aviso("");
+    procesar(txt);
+  } catch (e) {
+    const guardado = localStorage.getItem("rutero_csv");
+    if (guardado){ aviso("Sin conexión: mostrando la última versión guardada."); procesar(guardado); }
+    else aviso("No se pudieron cargar los datos.");
+  }
+}
+
+function procesar(txt){
+  puntos = parseCSV(txt).map(p => ({ ...p, lat: parseFloat(p.lat), lng: parseFloat(p.lng) }))
+                        .filter(p => !isNaN(p.lat) && !isNaN(p.lng));
+  llenar("fVend", "vendedor"); llenar("fDia", "dia");
+  pintar();
+}
+
+function llenar(id, campo){
+  const sel = document.getElementById(id), actual = sel.value;
+  const vals = [...new Set(puntos.map(p => p[campo]).filter(Boolean))].sort();
+  sel.length = 1;
+  vals.forEach(v => sel.add(new Option(v, v)));
+  sel.value = vals.includes(actual) ? actual : "";
+}
+
+function wa(tel){
+  let n = tel.replace(/\D/g, "");
+  if (n.startsWith("0")) n = "593" + n.slice(1);
+  return n;
+}
+
+function ficha(p){
+  const tel = p.telefono ? `<a href="tel:${esc(p.telefono)}">Llamar</a><a href="https://wa.me/${wa(p.telefono)}">WhatsApp</a>` : "";
+  return `<b>${esc(p.cliente)}</b><br>${esc(p.direccion)}<br>${p.notas ? "<i>"+esc(p.notas)+"</i><br>" : ""}
+  <div class="btns"><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}">Google Maps</a>
+  <a href="https://waze.com/ul?ll=${p.lat},${p.lng}&navigate=yes">Waze</a>${tel}</div>`;
+}
+
+function pintar(){
+  marcadores.forEach(m => m.remove()); marcadores = [];
+  const v = document.getElementById("fVend").value, d = document.getElementById("fDia").value;
+  const vis = puntos.filter(p => (!v || p.vendedor === v) && (!d || p.dia === d));
+  const lista = document.getElementById("list"); lista.innerHTML = "";
+  vis.forEach(p => {
+    const m = new maplibregl.Marker({ color: "#1b5e20" }).setLngLat([p.lng, p.lat])
+      .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(ficha(p))).addTo(map);
+    marcadores.push(m);
+    const it = document.createElement("div"); it.className = "item";
+    it.innerHTML = `<b>${esc(p.cliente)}</b><small>${esc(p.direccion)} · ${esc(p.dia)}</small>`;
+    it.onclick = () => { map.flyTo({ center: [p.lng, p.lat], zoom: 16 }); m.togglePopup(); };
+    lista.appendChild(it);
+  });
+  if (vis.length){
+    const b = new maplibregl.LngLatBounds();
+    vis.forEach(p => b.extend([p.lng, p.lat]));
+    map.fitBounds(b, { padding: 60, maxZoom: 15 });
+  }
+}
+
+document.getElementById("fVend").onchange = pintar;
+document.getElementById("fDia").onchange = pintar;
+document.getElementById("btnVista").onclick = function(){
+  const l = document.getElementById("list"), m = document.getElementById("map");
+  const verLista = m.style.display !== "none";
+  m.style.display = verLista ? "none" : "block";
+  l.style.maxHeight = verLista ? "100%" : "35%"; l.style.flex = verLista ? "1" : "";
+  this.textContent = verLista ? "Mapa" : "Lista";
+  if (!verLista) map.resize();
+};
+
+map.on("load", cargar);
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+</script>
+</body>
+</html>
