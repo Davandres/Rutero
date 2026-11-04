@@ -88,9 +88,12 @@ async function cargar(){
   }
 }
 
+function num(v){ return parseFloat(String(v).replace(",", ".")); }
+
 function procesar(txt){
-  puntos = parseCSV(txt).map(p => ({ ...p, lat: parseFloat(p.lat), lng: parseFloat(p.lng) }))
+  puntos = parseCSV(txt).map(p => ({ ...p, lat: num(p.lat), lng: num(p.lng) }))
                         .filter(p => !isNaN(p.lat) && !isNaN(p.lng));
+  aviso(puntos.length + " puntos cargados");
   llenar("fVend", "vendedor"); llenar("fDia", "dia");
   pintar();
 }
